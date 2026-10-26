@@ -75,6 +75,7 @@
       <button id="btn-logout" class="icon-btn" type="button" aria-label="Log out">⏻</button>
     </header>
     <div id="banner" class="banner hidden" role="status"></div>
+    <div id="story-strip" class="story-strip" aria-label="Stories"></div>
     <div class="filter"><input id="list-filter" type="search" placeholder="Search your chats" aria-label="Filter your chats"></div>
     <ul id="conv-list" class="conv-list"></ul>
   </aside>
@@ -106,7 +107,9 @@
         </div>
         <button id="btn-send" class="send" type="submit" aria-label="Send or record voice note"></button>
       </form>
-      <input id="file-input" type="file" hidden accept="image/*,video/*,audio/*,application/pdf,text/plain,text/csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip">
+      <input id="doc-input" type="file" hidden accept=".pdf,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,text/plain,text/csv,application/zip,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation">
+      <input id="gallery-input" type="file" hidden accept="image/*,video/*">
+      <input id="audio-input" type="file" hidden accept="audio/*">
       <input id="camera-input" type="file" hidden accept="image/*" capture="environment">
     </div>
   </section>
@@ -122,6 +125,14 @@
 <dialog id="dlg-profile">
   <div class="dlg-head"><h2>My profile</h2><button class="icon-btn dlg-x" type="button" data-close aria-label="Close">✕</button></div>
   <form id="form-profile" novalidate>
+    <div class="pf-avatar">
+      <div id="pf-av"></div>
+      <div class="pf-av-btns">
+        <button id="pf-photo" class="link-btn" type="button">Change photo</button>
+        <button id="pf-photo-rm" class="link-btn danger-text hidden" type="button">Remove photo</button>
+      </div>
+    </div>
+    <input id="pf-file" type="file" hidden accept="image/*">
     <label>Email<input id="pf-email" type="text" disabled></label>
     <label>Username<input id="pf-username" type="text" autocapitalize="none" spellcheck="false" maxlength="20"></label>
     <label>Display name<input id="pf-name" type="text" maxlength="50"></label>
@@ -138,6 +149,52 @@
 <dialog id="dlg-view">
   <div class="dlg-head"><button id="view-dl" class="menu-item view-dl" type="button">⬇ Download</button><button class="icon-btn dlg-x" type="button" data-close aria-label="Close">✕</button></div>
   <div id="view-body" class="view-body"></div>
+</dialog>
+
+<dialog id="dlg-attach">
+  <div class="dlg-head"><h2>Send</h2><button class="icon-btn dlg-x" type="button" data-close aria-label="Close">✕</button></div>
+  <button id="at-doc" class="menu-item" type="button">📄 Document (PDF, Word, Excel, PowerPoint, text, zip)</button>
+  <button id="at-gallery" class="menu-item" type="button">🖼 Photos &amp; videos</button>
+  <button id="at-audio" class="menu-item" type="button">🎵 Audio file</button>
+</dialog>
+
+<dialog id="dlg-story-new">
+  <div class="dlg-head"><h2>New story</h2><button class="icon-btn dlg-x" type="button" data-close aria-label="Close">✕</button></div>
+  <div id="sn-choose" class="sn-grid">
+    <button id="sn-text" class="sn-opt" type="button"><span>✏️</span>Text</button>
+    <button id="sn-media" class="sn-opt" type="button"><span>🖼</span>Photo / video</button>
+    <button id="sn-camera-btn" class="sn-opt" type="button"><span>📷</span>Camera</button>
+  </div>
+  <div id="sn-compose" class="hidden">
+    <div id="sn-stage" class="sn-stage"></div>
+    <div id="sn-colors" class="sn-colors"></div>
+    <input id="sn-caption" type="text" maxlength="200" placeholder="Add a caption (optional)" aria-label="Caption">
+    <p id="sn-error" class="form-error" role="alert"></p>
+    <div class="dlg-actions"><button id="sn-back" type="button">Back</button><button id="sn-post" class="post-btn" type="button">Post story</button></div>
+  </div>
+  <input id="sn-file" type="file" hidden accept="image/*,video/*">
+  <input id="sn-camera" type="file" hidden accept="image/*,video/*" capture="environment">
+</dialog>
+
+<dialog id="dlg-story" class="story-dlg">
+  <div class="sv-wrap">
+    <div id="sv-bars" class="sv-bars"></div>
+    <div class="sv-head">
+      <div id="sv-head-av"></div>
+      <div class="sv-who"><div id="sv-name" class="sv-name"></div><div id="sv-time" class="sv-time"></div></div>
+      <button id="sv-del" class="sv-icon hidden" type="button" aria-label="Delete story">🗑</button>
+      <button id="sv-close" class="sv-icon" type="button" aria-label="Close story" data-close>✕</button>
+    </div>
+    <div id="sv-stage" class="sv-stage"></div>
+    <button id="sv-prev" class="sv-nav sv-prev" type="button" aria-label="Previous"></button>
+    <button id="sv-next" class="sv-nav sv-next" type="button" aria-label="Next"></button>
+    <div id="sv-caption" class="sv-caption hidden"></div>
+    <button id="sv-views" class="sv-views hidden" type="button">👁 0</button>
+    <div id="sv-panel" class="sv-panel hidden">
+      <div class="sv-panel-head"><b>Viewed by</b><button id="sv-panel-close" class="sv-icon" type="button" aria-label="Close list">✕</button></div>
+      <ul id="sv-panel-list" class="sv-panel-list"></ul>
+    </div>
+  </div>
 </dialog>
 
 <dialog id="dlg-confirm">

@@ -46,10 +46,13 @@ function lastSeenText(iso) {
   return "last seen " + (l === "Today" ? "today" : l === "Yesterday" ? "yesterday" : "on " + l) + " at " + fmtTime(iso);
 }
 const COLORS = ["#e57373", "#ba68c8", "#7986cb", "#4fc3f7", "#4db6ac", "#81c784", "#ffb74d", "#a1887f", "#f06292", "#64b5f6"];
-function avatar(name, size = 48, online = false) {
+const avatarUrl = (path) => path ? sb.storage.from("avatars").getPublicUrl(path).data.publicUrl : null;
+function avatar(name, size = 48, online = false, path = null) {
   let hsh = 0; for (const ch of name) hsh = (hsh * 31 + ch.charCodeAt(0)) | 0;
   const a = h("div", { class: "avatar", text: (name[0] || "?").toUpperCase(),
     style: `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.42)}px;background:${COLORS[Math.abs(hsh) % COLORS.length]}` });
+  const url = avatarUrl(path);
+  if (url) { const img = h("img", { class: "av-img", src: url, alt: "", loading: "lazy" }); img.addEventListener("error", () => img.remove()); a.append(img); }
   if (online) a.append(h("span", { class: "dot", title: "online" }));
   return a;
 }
@@ -61,6 +64,7 @@ function toast(msg, kind = "info") {
 function errText(err) {
   const m = (err && (err.message || err.error_description)) || "Something went wrong.";
   if (/media_(path|type|name|size)/i.test(m)) return "Database is not updated for media yet. Re-run the latest schema.sql in the Supabase SQL Editor.";
+  if (/public\.stories|story_views|get_story_feed|avatar_path/i.test(m)) return "Stories / profile photo need the latest schema.sql. Re-run it in the Supabase SQL Editor.";
   if (/Bucket not found/i.test(m)) return "Storage bucket 'chat-media' is missing. Re-run the latest schema.sql in the Supabase SQL Editor.";
   if (/row-level security|violates row/i.test(m)) return "Blocked by database rules. Re-run the latest schema.sql in the Supabase SQL Editor, then try again.";
   if (/exceeded the maximum|too large|payload/i.test(m)) return "That file is too large (limit 10 MB).";
@@ -87,6 +91,19 @@ const ALLOWED = new Set(["image/jpeg", "image/png", "image/gif", "image/webp",
 const kindOf = (t) => t.startsWith("image/") ? "image" : t.startsWith("video/") ? "video" : t.startsWith("audio/") ? "audio" : "file";
 const KIND_LABEL = { image: "📷 Photo", video: "🎥 Video", audio: "🎵 Audio", file: "📎 File" };
 const fmtSize = (n) => n < 1024 ? n + " B" : n < 1048576 ? Math.round(n / 1024) + " KB" : (n / 1048576).toFixed(1) + " MB";
+const EXT_TYPES = { pdf: "application/pdf", doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", txt: "text/plain", csv: "text/csv",
+  zip: "application/zip", mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", ogg: "audio/ogg",
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif",
+  mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime" };
+function fixType(f) {
+  const t = (f.type || "").split(";")[0];
+  if (t && t !== "application/octet-stream") return f;
+  const ext = (f.name.split(".").pop() || "").toLowerCase();
+  return EXT_TYPES[ext] ? new File([f], f.name, { type: EXT_TYPES[ext] }) : f;
+}
 const safeName = (n) => n.normalize("NFKD").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "").slice(-80) || "file";
 
 /* ====================== boot / config ====================== */
@@ -221,6 +238,7 @@ function teardown() {
     active: null, msgs: [], hasMore: false, pending: null, pendingUrl: null, online: new Set(), typing: false, tChan: null,
     tReady: false, dbChan: null, presChan: null, hb: null, rtDown: false });
   mediaNodes.clear(); urlCache.clear(); cancelRecording(); renderAttach();
+  ST.items = []; $("#story-strip").replaceChildren(); clearStoryTimer();
   $("#app").classList.remove("chat-open"); $("#chat-view").classList.add("hidden"); $("#chat-empty").classList.remove("hidden");
   $("#conv-list").replaceChildren(); $("#messages").replaceChildren(); $("#list-filter").value = "";
   document.title = "ConnectChat";
@@ -238,8 +256,9 @@ async function boot(session) {
   }
   S.profile = data;
   showOnly("#app"); renderMe(); updateBanner(); renderList();
-  startRealtime(); startHeartbeat();
+  renderStories(); startRealtime(); startHeartbeat();
   await loadConvs();
+  loadStories(); purgeMyExpired();
 }
 
 (async () => {
@@ -258,7 +277,7 @@ async function loadConvs() {
   S.convs = data.map((r) => ({
     id: r.conv_id, otherId: r.other_id, username: r.other_username, name: r.other_name,
     lastSeen: r.other_last_seen, lastBody: r.last_body, lastSender: r.last_sender,
-    lastAt: r.last_at, lastRead: r.last_read_at, unread: r.unread_count, lastMedia: r.last_media_type,
+    lastAt: r.last_at, lastRead: r.last_read_at, unread: r.unread_count, lastMedia: r.last_media_type, avatar: r.other_avatar,
   }));
   if (S.pinned) {
     if (S.convs.some((c) => c.id === S.pinned.id)) S.pinned = null;
@@ -291,7 +310,7 @@ function convItem(c) {
   const open = () => openConversation(c.id);
   return h("li", { class: "conv" + (c.id === S.active ? " active" : ""), tabindex: "0", role: "button", onclick: open,
       onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } } },
-    avatar(dn(c), 49, S.online.has(c.otherId)),
+    avatar(dn(c), 49, S.online.has(c.otherId), c.avatar),
     h("div", { class: "conv-main" },
       h("div", { class: "conv-top" },
         h("span", { class: "conv-name", text: dn(c) }),
@@ -305,7 +324,7 @@ function convItem(c) {
 
 $("#list-filter").addEventListener("input", (e) => { S.filter = e.target.value; renderList(); });
 
-function renderMe() { $("#me-btn").replaceChildren(avatar(S.profile.display_name || S.profile.username, 40)); }
+function renderMe() { $("#me-btn").replaceChildren(avatar(S.profile.display_name || S.profile.username, 40, false, S.profile.avatar_path)); }
 
 /* ====================== open / close chat ====================== */
 async function openConversation(id) {
@@ -339,7 +358,7 @@ window.addEventListener("popstate", () => { if (S.active) closeChat(); });
 
 function updateChatHeader() {
   const c = activeConv(); if (!c) return;
-  $("#ch-avatar").replaceChildren(avatar(dn(c), 40, S.online.has(c.otherId)));
+  $("#ch-avatar").replaceChildren(avatar(dn(c), 40, S.online.has(c.otherId), c.avatar));
   $("#ch-name").textContent = dn(c);
   $("#ch-status").textContent = S.typing ? "typing…" : S.online.has(c.otherId) ? "online" : lastSeenText(c.lastSeen) || "@" + c.username;
 }
@@ -386,11 +405,11 @@ function renderMessages(mode) {
 
 const mediaNodes = new Map();   // message id -> <img>/<video>/<audio>, reused so playback isn't interrupted by re-renders
 const urlCache = new Map();     // storage path -> signed URL (private bucket, links expire after 1 hour)
-async function signedUrl(path, download) {
-  const key = path + "|" + (download || "");
+async function signedUrl(path, download, bucket) {
+  const key = (bucket || "chat-media") + "|" + path + "|" + (download || "");
   const hit = urlCache.get(key);
   if (hit && hit.exp > Date.now() + 60000) return hit.url;
-  const { data, error } = await sb.storage.from("chat-media").createSignedUrl(path, 3600, download ? { download } : undefined);
+  const { data, error } = await sb.storage.from(bucket || "chat-media").createSignedUrl(path, 3600, download ? { download } : undefined);
   if (error) throw error;
   urlCache.set(key, { url: data.signedUrl, exp: Date.now() + 3600 * 1000 });
   return data.signedUrl;
@@ -598,9 +617,12 @@ input.addEventListener("input", () => {
 });
 
 /* ---- attachments ---- */
-$("#btn-attach").onclick = () => $("#file-input").click();
+$("#btn-attach").onclick = () => $("#dlg-attach").showModal();
+for (const [btn, inp] of [["#at-doc", "#doc-input"], ["#at-gallery", "#gallery-input"], ["#at-audio", "#audio-input"]]) {
+  $(btn).onclick = () => { $("#dlg-attach").close(); $(inp).click(); };
+}
 $("#btn-camera").onclick = () => $("#camera-input").click();
-for (const id of ["#file-input", "#camera-input"]) {
+for (const id of ["#doc-input", "#gallery-input", "#audio-input", "#camera-input"]) {
   $(id).addEventListener("change", async (e) => {
     const f = e.target.files[0]; e.target.value = "";
     if (f) await attachFile(f);
@@ -622,6 +644,7 @@ async function shrinkImage(file) {     // phone photos are huge; resize to max 1
 }
 
 async function attachFile(file) {
+  file = fixType(file);
   if (!S.active) return;
   if (!navigator.onLine) { toast("You're offline. Attachments can only be sent while connected.", "error"); return; }
   if (!ALLOWED.has((file.type || "").split(";")[0])) { toast("This file type isn't supported. Allowed: photos, videos, audio, PDF, Office files, text, zip.", "error"); return; }
@@ -714,6 +737,7 @@ function startRealtime() {
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, (p) => onInsert(p.new))
     .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages" }, (p) => onUpdate(p.new))
     .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages" }, (p) => onDelete(p.old))
+    .on("postgres_changes", { event: "*", schema: "public", table: "stories" }, () => refreshStories())
     .subscribe((status) => {
       if (status === "SUBSCRIBED") { const was = S.rtDown; S.rtDown = false; updateBanner(); if (was) resync(); }
       else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) { S.rtDown = true; updateBanner(); }
@@ -754,6 +778,7 @@ function onDelete(old) {
 
 async function resync() {
   if (!S.user) return;
+  refreshStories();
   await loadConvs();
   const id = S.active; if (!id) return;
   try {
@@ -832,14 +857,14 @@ searchBox.addEventListener("input", debounce(async () => {
   const seq = ++searchSeq;
   if (q.length < 2) { results.replaceChildren(emptyState("Find someone", "Type at least 2 characters of their username.")); return; }
   results.replaceChildren(h("li", { class: "state" }, h("div", { class: "spinner" }), "Searching…"));
-  const { data, error } = await sb.from("profiles").select("id,username,display_name,about,last_seen")
+  const { data, error } = await sb.from("profiles").select("id,username,display_name,about,last_seen,avatar_path")
     .like("username", q.replace(/_/g, "\\_") + "%").neq("id", S.user.id).order("username").limit(20);
   if (seq !== searchSeq) return;
   if (error) { results.replaceChildren(emptyState("Search failed", errText(error))); return; }
   if (!data.length) { results.replaceChildren(emptyState("No users found", `Nobody has a username starting with “${q}”.`)); return; }
   results.replaceChildren(...data.map((u) => h("li", { class: "conv", tabindex: "0", role: "button", onclick: () => startChat(u),
       onkeydown: (e) => { if (e.key === "Enter") startChat(u); } },
-    avatar(u.display_name || u.username, 44),
+    avatar(u.display_name || u.username, 44, false, u.avatar_path),
     h("div", { class: "conv-main" }, h("div", { class: "conv-name", text: u.display_name || u.username }),
       h("div", { class: "about", text: "@" + u.username + " · " + u.about })))));
 }, 300));
@@ -850,7 +875,7 @@ async function startChat(u) {
   $("#dlg-new").close();
   let c = S.convs.find((x) => x.id === data);
   if (!c) {
-    c = { id: data, otherId: u.id, username: u.username, name: u.display_name, lastSeen: u.last_seen,
+    c = { id: data, otherId: u.id, username: u.username, name: u.display_name, lastSeen: u.last_seen, avatar: u.avatar_path,
       lastBody: null, lastSender: null, lastAt: new Date().toISOString(), lastRead: null, unread: 0 };
     S.pinned = c; S.convs.unshift(c); renderList();
   }
@@ -861,7 +886,7 @@ async function startChat(u) {
 $("#me-btn").onclick = () => {
   $("#pf-email").value = S.user.email || "";
   $("#pf-username").value = S.profile.username; $("#pf-name").value = S.profile.display_name; $("#pf-about").value = S.profile.about;
-  $("#pf-error").textContent = ""; $("#dlg-profile").showModal();
+  $("#pf-error").textContent = ""; renderPfAvatar(); $("#dlg-profile").showModal();
 };
 $("#btn-theme").onclick = toggleTheme;
 $("#form-profile").addEventListener("submit", async (e) => {
@@ -877,6 +902,290 @@ $("#form-profile").addEventListener("submit", async (e) => {
   if (error) { err.textContent = error.code === "23505" ? "That username is taken." : errText(error); return; }
   S.profile = data; renderMe(); $("#dlg-profile").close(); toast("Profile saved");
 });
+
+
+/* ====================== profile photo (DP) ====================== */
+async function loadBitmap(file) {
+  try { return await createImageBitmap(file); }
+  catch (e) {
+    return await new Promise((res, rej) => {
+      const img = new Image(), u = URL.createObjectURL(file);
+      img.onload = () => { URL.revokeObjectURL(u); res(img); }; img.onerror = rej; img.src = u;
+    });
+  }
+}
+async function squareJpeg(file, size) {      // centre-crop to a square and shrink
+  const bmp = await loadBitmap(file);
+  const w = bmp.width || bmp.naturalWidth, hh = bmp.height || bmp.naturalHeight, side = Math.min(w, hh);
+  const cv = document.createElement("canvas"); cv.width = size; cv.height = size;
+  const ctx = cv.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
+  ctx.drawImage(bmp, (w - side) / 2, (hh - side) / 2, side, side, 0, 0, size, size);
+  return await new Promise((r) => cv.toBlob(r, "image/jpeg", 0.85));
+}
+function renderPfAvatar() {
+  $("#pf-av").replaceChildren(avatar(S.profile.display_name || S.profile.username, 84, false, S.profile.avatar_path));
+  $("#pf-photo-rm").classList.toggle("hidden", !S.profile.avatar_path);
+}
+$("#pf-photo").onclick = () => $("#pf-file").click();
+$("#pf-file").addEventListener("change", async (e) => {
+  const f = fixType(e.target.files[0] || { type: "", name: "" }); e.target.value = "";
+  if (!f.size) return;
+  if (!f.type.startsWith("image/")) { toast("Please choose an image.", "error"); return; }
+  if (!navigator.onLine) { toast("You're offline.", "error"); return; }
+  const btn = $("#pf-photo"); setBusy(btn, true);
+  try {
+    const blob = await squareJpeg(f, 512); if (!blob) throw new Error("Could not process that image.");
+    const path = `${S.user.id}/${uuid()}.jpg`;
+    const up = await sb.storage.from("avatars").upload(path, blob, { contentType: "image/jpeg", cacheControl: "31536000", upsert: false });
+    if (up.error) throw up.error;
+    const old = S.profile.avatar_path;
+    const { data, error } = await sb.from("profiles").update({ avatar_path: path }).eq("id", S.user.id).select().single();
+    if (error) { sb.storage.from("avatars").remove([path]).then(() => {}, () => {}); throw error; }
+    S.profile = data;
+    if (old) sb.storage.from("avatars").remove([old]).then(() => {}, () => {});
+    renderMe(); renderPfAvatar(); toast("Profile photo updated");
+  } catch (ex) { toast("Could not update photo: " + errText(ex), "error"); }
+  finally { setBusy(btn, false); }
+});
+$("#pf-photo-rm").onclick = async () => {
+  const old = S.profile.avatar_path; if (!old) return;
+  const { data, error } = await sb.from("profiles").update({ avatar_path: null }).eq("id", S.user.id).select().single();
+  if (error) { toast("Could not remove photo: " + errText(error), "error"); return; }
+  S.profile = data; sb.storage.from("avatars").remove([old]).then(() => {}, () => {});
+  renderMe(); renderPfAvatar(); toast("Profile photo removed");
+};
+
+/* ====================== stories (24-hour status) ====================== */
+const STORY_COLORS = ["#128c7e", "#7b1fa2", "#c2185b", "#1565c0", "#ef6c00", "#37474f"];
+const STORY_SEC = 5;
+const ST = { items: [], warned: false };
+const SV = { groups: [], g: 0, i: 0, timer: null, elapsed: 0, dur: STORY_SEC * 1000, paused: false, token: 0 };
+const storySigned = (path) => signedUrl(path, null, "story-media");
+function timeAgo(iso) {
+  const m = Math.floor((Date.now() - new Date(iso)) / 60000);
+  if (m < 1) return "Just now"; if (m < 60) return m + " min ago";
+  const hr = Math.floor(m / 60); return hr < 24 ? hr + " h ago" : "Yesterday";
+}
+
+async function loadStories() {
+  if (!S.user) return;
+  const { data, error } = await sb.rpc("get_story_feed");
+  if (error) {
+    if (!ST.warned) { ST.warned = true; console.warn("stories:", error.message); if (/get_story_feed|schema cache/i.test(error.message)) toast("Stories need the latest schema.sql — re-run it in Supabase.", "error"); }
+    return;
+  }
+  ST.items = (data || []).map((r) => ({ id: r.story_id, owner: r.owner_id, username: r.owner_username, name: r.owner_name,
+    avatar: r.owner_avatar, kind: r.kind, path: r.media_path, body: r.body, bg: r.bg, caption: r.caption,
+    at: r.created_at, exp: r.expires_at, seen: r.seen }));
+  renderStories();
+}
+const refreshStories = debounce(loadStories, 400);
+
+async function purgeMyExpired() {              // delete my own expired stories + their files
+  const { data } = await sb.from("stories").select("id,media_path").eq("user_id", S.user.id).lt("expires_at", new Date().toISOString());
+  if (!data || !data.length) return;
+  const paths = data.map((x) => x.media_path).filter(Boolean);
+  if (paths.length) await sb.storage.from("story-media").remove(paths);
+  await sb.from("stories").delete().in("id", data.map((x) => x.id));
+}
+
+function storyGroups() {
+  const now = Date.now(), map = new Map();
+  for (const st of ST.items) {
+    if (new Date(st.exp).getTime() <= now) continue;
+    if (!map.has(st.owner)) map.set(st.owner, []);
+    map.get(st.owner).push(st);
+  }
+  const groups = [...map.entries()].map(([owner, items]) => ({ owner, items, unseen: items.some((x) => !x.seen),
+    name: items[0].name || items[0].username, avatar: items[0].avatar, last: items[items.length - 1].at }));
+  const mine = groups.find((g) => g.owner === S.user.id) || null;
+  const others = groups.filter((g) => g.owner !== S.user.id)
+    .sort((a, b) => (b.unseen - a.unseen) || (new Date(b.last) - new Date(a.last)));
+  return { mine, others };
+}
+
+function renderStories() {
+  if (!S.user) return;
+  const strip = $("#story-strip"), { mine, others } = storyGroups();
+  const open = (owner) => () => openStories(owner);
+  strip.replaceChildren(
+    h("div", { class: "story-item", role: "button", tabindex: "0", onclick: () => (mine ? openStories(mine.owner) : openStoryNew()) },
+      h("div", { class: "ring " + (mine ? "mine" : "none") }, avatar(S.profile.display_name || S.profile.username, 54, false, S.profile.avatar_path)),
+      h("button", { class: "story-plus", type: "button", "aria-label": "Add story", text: "+", onclick: (e) => { e.stopPropagation(); openStoryNew(); } }),
+      h("span", { class: "story-name", text: "My story" })),
+    ...others.map((g) => h("div", { class: "story-item", role: "button", tabindex: "0", onclick: open(g.owner) },
+      h("div", { class: "ring " + (g.unseen ? "unseen" : "seen") }, avatar(g.name, 54, false, g.avatar)),
+      h("span", { class: "story-name", text: g.name }))));
+}
+
+/* ---- create a story ---- */
+const SN = { kind: null, file: null, url: null, bg: STORY_COLORS[0] };
+const colorsBox = $("#sn-colors");
+function snShow(compose) { $("#sn-choose").classList.toggle("hidden", compose); $("#sn-compose").classList.toggle("hidden", !compose); }
+function resetSN() {
+  if (SN.url) URL.revokeObjectURL(SN.url);
+  Object.assign(SN, { kind: null, file: null, url: null, bg: STORY_COLORS[0] });
+  $("#sn-stage").replaceChildren(); $("#sn-caption").value = ""; $("#sn-error").textContent = ""; snShow(false);
+}
+function openStoryNew() { resetSN(); $("#dlg-story-new").showModal(); }
+$("#dlg-story-new").addEventListener("close", resetSN);
+$("#sn-back").onclick = resetSN;
+function paintSwatches() {
+  colorsBox.replaceChildren(...STORY_COLORS.map((c) => h("button", { type: "button", class: SN.bg === c ? "sel" : "", style: `background:${c}`,
+    "aria-label": "Background colour", onclick: () => { SN.bg = c; $("#sn-stage").style.background = c; paintSwatches(); } })));
+}
+$("#sn-text").onclick = () => {
+  SN.kind = "text"; snShow(true);
+  const ta = h("textarea", { id: "sn-text-input", maxlength: "500", placeholder: "Type a status", "aria-label": "Story text" });
+  const stage = $("#sn-stage"); stage.style.background = SN.bg; stage.replaceChildren(ta);
+  $("#sn-caption").classList.add("hidden"); colorsBox.classList.remove("hidden"); paintSwatches(); ta.focus();
+};
+$("#sn-media").onclick = () => $("#sn-file").click();
+$("#sn-camera-btn").onclick = () => $("#sn-camera").click();
+for (const id of ["#sn-file", "#sn-camera"]) {
+  $(id).addEventListener("change", async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await pickStoryFile(f); });
+}
+async function pickStoryFile(file0) {
+  let f = fixType(file0); const t = f.type;
+  const isVid = ["video/mp4", "video/webm", "video/quicktime"].includes(t);
+  const isImg = ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(t);
+  if (!isVid && !isImg) { toast("Stories support photos (JPG, PNG, WebP, GIF) and videos (MP4, WebM, MOV).", "error"); return; }
+  if (isImg && t !== "image/gif") f = await shrinkImage(f);
+  if (f.size > MAX_MEDIA) { toast(`That file is too large (${fmtSize(f.size)}). The limit is 10 MB.`, "error"); return; }
+  resetSN(); SN.kind = isVid ? "video" : "image"; SN.file = f; SN.url = URL.createObjectURL(f);
+  const stage = $("#sn-stage"); stage.style.background = "#000";
+  stage.replaceChildren(isVid ? h("video", { src: SN.url, controls: true, playsinline: true, class: "sn-prev" }) : h("img", { src: SN.url, alt: "", class: "sn-prev" }));
+  colorsBox.classList.add("hidden"); $("#sn-caption").classList.remove("hidden"); snShow(true);
+}
+$("#sn-post").onclick = async () => {
+  const btn = $("#sn-post"), err = $("#sn-error"); err.textContent = "";
+  if (!navigator.onLine) { err.textContent = "You're offline. Stories can only be posted while connected."; return; }
+  setBusy(btn, true);
+  try {
+    let row;
+    if (SN.kind === "text") {
+      const ta = $("#sn-text-input"), body = ta ? ta.value.trim() : "";
+      if (!body) { err.textContent = "Write something first."; return; }
+      row = { kind: "text", body, bg: SN.bg };
+    } else if (SN.file) {
+      const path = `${S.user.id}/${uuid()}-${safeName(SN.file.name)}`;
+      const up = await sb.storage.from("story-media").upload(path, SN.file, { contentType: SN.file.type.split(";")[0], upsert: false });
+      if (up.error) throw up.error;
+      row = { kind: SN.kind, media_path: path, caption: $("#sn-caption").value.trim() || null };
+    } else { err.textContent = "Choose a photo or video first."; return; }
+    const { error } = await sb.from("stories").insert(row);
+    if (error) { if (row.media_path) sb.storage.from("story-media").remove([row.media_path]).then(() => {}, () => {}); throw error; }
+    $("#dlg-story-new").close(); toast("Story posted — visible for 24 hours"); loadStories();
+  } catch (ex) { err.textContent = errText(ex); }
+  finally { setBusy(btn, false); }
+};
+
+/* ---- watch stories ---- */
+function clearStoryTimer() { clearInterval(SV.timer); SV.timer = null; }
+function startStoryTimer(dur) {
+  clearStoryTimer(); SV.dur = dur; SV.elapsed = 0;
+  SV.timer = setInterval(() => {
+    if (SV.paused) return;
+    SV.elapsed += 100;
+    const bar = $("#sv-bars").children[SV.i];
+    if (bar && bar.firstChild) bar.firstChild.style.width = Math.min(100, (SV.elapsed / SV.dur) * 100) + "%";
+    if (SV.elapsed >= SV.dur) nextStory();
+  }, 100);
+}
+function openStories(owner) {
+  const { mine, others } = storyGroups();
+  const all = [...(mine ? [mine] : []), ...others];
+  const start = all.findIndex((g) => g.owner === owner); if (start < 0) return;
+  SV.groups = all.slice(start);
+  const first = SV.groups[0].items.findIndex((x) => !x.seen);
+  $("#dlg-story").showModal(); showStory(0, first < 0 ? 0 : first);
+}
+async function showStory(gi, i) {
+  clearStoryTimer(); const token = ++SV.token;
+  SV.g = gi; SV.i = i; SV.paused = false;
+  const g = SV.groups[gi], st = g && g.items[i];
+  if (!st) { closeStory(); return; }
+  const own = st.owner === S.user.id;
+  $("#sv-bars").replaceChildren(...g.items.map((_, k) => h("div", { class: "sv-bar" }, h("i", { style: "width:" + (k < i ? "100%" : "0") }))));
+  $("#sv-head-av").replaceChildren(avatar(g.name, 38, false, g.avatar));
+  $("#sv-name").textContent = own ? "My story" : g.name; $("#sv-time").textContent = timeAgo(st.at);
+  $("#sv-del").classList.toggle("hidden", !own);
+  $("#sv-views").classList.toggle("hidden", !own); $("#sv-panel").classList.add("hidden");
+  $("#sv-caption").textContent = st.caption || ""; $("#sv-caption").classList.toggle("hidden", !st.caption);
+  const stage = $("#sv-stage"); stage.style.background = st.kind === "text" ? (st.bg || "#128c7e") : "#000";
+  stage.replaceChildren();
+  if (own) {
+    $("#sv-views").textContent = "👁 …";
+    sb.from("story_views").select("*", { count: "exact", head: true }).eq("story_id", st.id)
+      .then((r) => { if (token === SV.token) $("#sv-views").textContent = "👁 " + (r.count || 0); }, () => {});
+  } else if (!st.seen) { st.seen = true; sb.from("story_views").insert({ story_id: st.id }).then(() => {}, () => {}); }
+  if (st.kind === "text") { stage.append(h("div", { class: "sv-text", text: st.body })); startStoryTimer(STORY_SEC * 1000); return; }
+  stage.append(h("div", { class: "spinner" }));
+  let url;
+  try { url = await storySigned(st.path); }
+  catch (e) { if (token === SV.token) { stage.replaceChildren(h("p", { class: "muted", text: "Could not load this story." })); startStoryTimer(3000); } return; }
+  if (token !== SV.token) return;
+  if (st.kind === "image") {
+    const img = h("img", { class: "sv-media", alt: "" });
+    img.addEventListener("load", () => { if (token === SV.token) startStoryTimer(STORY_SEC * 1000); });
+    img.addEventListener("error", () => { if (token === SV.token) { stage.replaceChildren(h("p", { class: "muted", text: "Could not load this story." })); startStoryTimer(3000); } });
+    img.src = url; stage.replaceChildren(img);
+  } else {
+    const v = h("video", { class: "sv-media", playsinline: true });
+    v.addEventListener("loadedmetadata", () => { if (token === SV.token) startStoryTimer(Math.min((v.duration || STORY_SEC) * 1000 + 300, 60000)); });
+    v.addEventListener("error", () => { if (token === SV.token) startStoryTimer(3000); });
+    v.src = url; stage.replaceChildren(v);
+    v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+  }
+}
+function nextStory() {
+  const g = SV.groups[SV.g];
+  if (SV.i + 1 < g.items.length) showStory(SV.g, SV.i + 1);
+  else if (SV.g + 1 < SV.groups.length) {
+    const ng = SV.groups[SV.g + 1], idx = ng.items.findIndex((x) => !x.seen);
+    showStory(SV.g + 1, idx < 0 ? 0 : idx);
+  } else closeStory();
+}
+function prevStory() {
+  if (SV.i > 0) showStory(SV.g, SV.i - 1);
+  else if (SV.g > 0) showStory(SV.g - 1, SV.groups[SV.g - 1].items.length - 1);
+  else showStory(SV.g, 0);
+}
+function closeStory() { const d = $("#dlg-story"); if (d.open) d.close(); }
+$("#dlg-story").addEventListener("close", () => {
+  clearStoryTimer(); SV.token++; $("#sv-stage").replaceChildren(); $("#sv-panel").classList.add("hidden"); renderStories();
+});
+$("#sv-next").onclick = nextStory; $("#sv-prev").onclick = prevStory;
+$("#sv-views").onclick = async () => {
+  const g = SV.groups[SV.g], st = g && g.items[SV.i]; if (!st) return;
+  SV.paused = true; $("#sv-panel").classList.remove("hidden");
+  const list = $("#sv-panel-list"); list.replaceChildren(h("li", { class: "muted", text: "Loading…" }));
+  const { data: views, error } = await sb.from("story_views").select("viewer_id,viewed_at").eq("story_id", st.id).order("viewed_at", { ascending: false });
+  if (error) { list.replaceChildren(h("li", { class: "muted", text: errText(error) })); return; }
+  if (!views.length) { list.replaceChildren(h("li", { class: "muted", text: "No views yet." })); return; }
+  const { data: profs } = await sb.from("profiles").select("id,username,display_name,avatar_path").in("id", views.map((v) => v.viewer_id));
+  const byId = new Map((profs || []).map((x) => [x.id, x]));
+  list.replaceChildren(...views.map((v) => {
+    const pr = byId.get(v.viewer_id) || { username: "unknown", display_name: "" };
+    return h("li", {}, avatar(pr.display_name || pr.username, 36, false, pr.avatar_path),
+      h("span", { text: pr.display_name || pr.username }), h("span", { class: "t", text: timeAgo(v.viewed_at) }));
+  }));
+};
+$("#sv-panel-close").onclick = () => { $("#sv-panel").classList.add("hidden"); SV.paused = false; };
+$("#sv-del").onclick = async () => {
+  const g = SV.groups[SV.g], st = g && g.items[SV.i]; if (!st) return;
+  SV.paused = true;
+  const ok = await confirmBox("Delete story?", "This story will be removed for everyone.", "Delete");
+  if (!ok) { SV.paused = false; return; }
+  const { data, error } = await sb.from("stories").delete().eq("id", st.id).select("id");
+  if (error || !data || !data.length) { toast("Could not delete: " + (error ? errText(error) : "not allowed"), "error"); SV.paused = false; return; }
+  if (st.path) sb.storage.from("story-media").remove([st.path]).then(() => {}, () => {});
+  ST.items = ST.items.filter((x) => x.id !== st.id); g.items = g.items.filter((x) => x.id !== st.id);
+  toast("Story deleted");
+  if (g.items.length) showStory(SV.g, Math.min(SV.i, g.items.length - 1));
+  else if (SV.g + 1 < SV.groups.length) { SV.groups.splice(SV.g, 1); showStory(SV.g, 0); }
+  else closeStory();
+};
 
 /* ====================== service worker ====================== */
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
