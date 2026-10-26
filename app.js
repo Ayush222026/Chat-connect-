@@ -67,7 +67,7 @@ function errText(err) {
   if (/Invalid login credentials/i.test(m)) return "Wrong email or password.";
   if (/Email not confirmed/i.test(m)) return "Please confirm your email first (check your inbox), then log in.";
   if (/already registered|already been registered/i.test(m)) return "That email is already registered. Try logging in.";
-  if (/rate limit/i.test(m)) return "Too many attempts. Please wait a few minutes and try again.";
+  if (/rate limit|once every/i.test(m)) return "Email limit reached. Supabase's built-in email sender allows only a few emails per hour, and a resend can be requested once a minute. Please wait and try again.";
   if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return "Network problem. Check your internet connection.";
   return m;
 }
@@ -150,7 +150,7 @@ $("#form-login").addEventListener("submit", async (e) => {
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   setBusy(btn, false);
   if (error) {
-    if (/Email not confirmed/i.test(error.message)) { showOtp(email, "This email isn't verified yet. Enter the code we sent, or tap Resend code."); return; }
+    if (/Email not confirmed/i.test(error.message)) { showOtp(email, "This email isn't verified yet. Open the verification email we sent, or tap Resend."); return; }
     err.textContent = errText(error); return;
   }
   $("#login-password").value = "";
@@ -170,54 +170,39 @@ $("#form-signup").addEventListener("submit", async (e) => {
     const { data: free, error: e1 } = await sb.rpc("username_available", { uname: username });
     if (e1) throw e1;
     if (!free) { err.textContent = "That username is taken. Please choose another."; return; }
-    const { data, error } = await sb.auth.signUp({ email, password, options: { data: { username } } });
+    const { data, error } = await sb.auth.signUp({ email, password, options: { data: { username }, emailRedirectTo: REDIRECT } });
     if (error) throw error;
     if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
       err.textContent = "That email is already registered. Try logging in."; return;
     }
-    if (!data.session) { showOtp(email, "Account created. Check your inbox (and spam folder) for the code."); return; }
+    if (!data.session) { showOtp(email, "Account created. Please verify your email to continue."); return; }
     await boot(data.session);
   } catch (ex) { err.textContent = errText(ex); }
   finally { setBusy(btn, false); }
 });
 
-/* ---- email OTP verification ---- */
+/* ---- email verification (link) + resend ---- */
+const REDIRECT = location.origin + location.pathname;   // where the email link sends the user back to
 let otpEmail = "", otpTimer = null;
 function showOtp(email, msg) {
   otpEmail = email;
   for (const f of ["#form-login", "#form-signup"]) $(f).classList.add("hidden");
   $("#auth-tabs").classList.add("hidden"); $("#form-otp").classList.remove("hidden");
   $("#otp-email").textContent = email; $("#otp-error").textContent = ""; $("#otp-msg").textContent = msg || "";
-  $("#otp-code").value = ""; $("#otp-code").focus();
 }
-$("#otp-back").onclick = () => selectTab("login");
-$("#form-otp").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const code = $("#otp-code").value.replace(/\s+/g, ""), err = $("#otp-error");
-  err.textContent = "";
-  if (!/^\d{6,10}$/.test(code)) { err.textContent = "Enter the numeric code from your email."; return; }
-  const btn = $("#otp-btn"); setBusy(btn, true);
-  const { data, error } = await sb.auth.verifyOtp({ email: otpEmail, token: code, type: "signup" });
-  setBusy(btn, false);
-  if (error) {
-    err.textContent = /expired|invalid/i.test(error.message) ? "That code is wrong or has expired. Tap Resend code to get a new one." : errText(error);
-    return;
-  }
-  if (!data.session) { selectTab("login"); toast("Email verified. Please log in."); return; }
-  selectTab("login"); await boot(data.session);
-});
+$("#otp-back").onclick = () => { selectTab("login"); if (otpEmail) $("#login-email").value = otpEmail; };
 $("#otp-resend").onclick = async () => {
   const b = $("#otp-resend"), err = $("#otp-error"), msg = $("#otp-msg");
   err.textContent = ""; msg.textContent = ""; b.disabled = true;
-  const { error } = await sb.auth.resend({ type: "signup", email: otpEmail });
+  const { error } = await sb.auth.resend({ type: "signup", email: otpEmail, options: { emailRedirectTo: REDIRECT } });
   if (error) { err.textContent = errText(error); b.disabled = false; return; }
-  msg.textContent = "A new code has been sent.";
-  let n = 60; b.textContent = `Resend code (${n}s)`;
+  msg.textContent = "A new verification email has been sent.";
+  let n = 60; b.textContent = `Resend in ${n}s`;
   clearInterval(otpTimer);
   otpTimer = setInterval(() => {
     n--;
-    if (n <= 0) { clearInterval(otpTimer); b.disabled = false; b.textContent = "Resend code"; }
-    else b.textContent = `Resend code (${n}s)`;
+    if (n <= 0) { clearInterval(otpTimer); b.disabled = false; b.textContent = "Resend verification email"; }
+    else b.textContent = `Resend in ${n}s`;
   }, 1000);
 };
 
@@ -258,6 +243,8 @@ async function boot(session) {
 }
 
 (async () => {
+  const hp = new URLSearchParams(location.hash.replace(/^#/, ""));
+  if (hp.get("error_description")) setTimeout(() => toast(hp.get("error_description") + " Tap Resend verification email on the login screen.", "error"), 700);
   const { data } = await sb.auth.getSession();
   if (data && data.session) await boot(data.session); else showOnly("#auth");
 })();

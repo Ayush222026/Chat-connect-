@@ -1,6 +1,6 @@
 // ConnectChat service worker: caches the APP SHELL only.
 // Messages are never cached or sent offline — Supabase requests are not intercepted.
-const CACHE = "connectchat-v3";
+const CACHE = "connectchat-v4";
 const CDN = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js",
                "manifest.webmanifest", "icon-192.png", "icon-512.png"];

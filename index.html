@@ -53,13 +53,12 @@
       <button id="su-btn" class="primary" type="submit">Create account</button>
     </form>
     <form id="form-otp" class="hidden" novalidate>
-      <p class="otp-lead">We sent a verification code to <b id="otp-email"></b>. Enter it below.</p>
-      <label>Verification code<input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required></label>
+      <div class="logo">📧</div>
+      <p class="otp-lead">We sent a verification link to <b id="otp-email"></b>. Open your email (check spam too) and tap the link. You'll be logged in automatically.</p>
       <p id="otp-error" class="form-error" role="alert"></p>
       <p id="otp-msg" class="form-info" role="status"></p>
-      <button id="otp-btn" class="primary" type="submit">Verify and continue</button>
-      <button id="otp-resend" class="link-btn" type="button">Resend code</button>
-      <button id="otp-back" class="link-btn" type="button">← Back to log in</button>
+      <button id="otp-resend" class="primary" type="button">Resend verification email</button>
+      <button id="otp-back" class="link-btn" type="button">I've verified — go to log in</button>
     </form>
     <p class="fine">Messages travel over HTTPS and are stored in a database. They are <b>not</b> end-to-end encrypted.</p>
   </div>
