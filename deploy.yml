@@ -1,0 +1,48 @@
+name: Deploy ConnectChat to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to deploy with placeholder config
+        run: |
+          if grep -q "YOUR-PROJECT-REF" config.js || grep -q "YOUR-PUBLISHABLE-OR-ANON-KEY" config.js; then
+            echo "::error file=config.js::Edit config.js and add your Supabase URL and public key first."
+            exit 1
+          fi
+          if grep -qiE "service_role|sb_secret_" config.js; then
+            echo "::error file=config.js::Secret key detected in config.js. Use only the public key."
+            exit 1
+          fi
+
+      - name: Assemble site (only the public web files)
+        run: |
+          mkdir _site
+          cp index.html styles.css app.js config.js sw.js manifest.webmanifest icon-192.png icon-512.png _site/
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
