@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ConnectChat</title>
+<meta name="theme-color" content="#008069">
+<meta name="description" content="ConnectChat — private one-to-one real-time chat">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<script>
+  try { document.documentElement.dataset.theme = localStorage.getItem("cc-theme") ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch (e) {}
+</script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="splash" class="center-screen"><div class="logo">💬</div><h1>ConnectChat</h1><div class="spinner"></div></div>
+
+<div id="setup-error" class="center-screen hidden">
+  <div class="logo">⚙️</div><h1>Setup needed</h1>
+  <p id="setup-msg"></p>
+</div>
+
+<!-- ===== AUTH ===== -->
+<main id="auth" class="auth hidden">
+  <div class="auth-card">
+    <div class="logo">💬</div>
+    <h1>ConnectChat</h1>
+    <p class="sub">Private one-to-one chat</p>
+    <div class="tabs" role="tablist">
+      <button id="tab-login" class="tab active" role="tab" type="button">Log in</button>
+      <button id="tab-signup" class="tab" role="tab" type="button">Sign up</button>
+    </div>
+
+    <form id="form-login" novalidate>
+      <label>Email<input id="login-email" type="email" autocomplete="email" required></label>
+      <label>Password<input id="login-password" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="form-error" role="alert"></p>
+      <button id="login-btn" class="primary" type="submit">Log in</button>
+    </form>
+
+    <form id="form-signup" class="hidden" novalidate>
+      <label>Email<input id="su-email" type="email" autocomplete="email" required></label>
+      <label>Username<input id="su-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="20" required></label>
+      <small class="hint">3–20 characters: lowercase letters, numbers, underscore.</small>
+      <label>Password<input id="su-password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <small class="hint">At least 8 characters.</small>
+      <p id="su-error" class="form-error" role="alert"></p>
+      <p id="su-info" class="form-info" role="status"></p>
+      <button id="su-btn" class="primary" type="submit">Create account</button>
+    </form>
+    <p class="fine">Messages travel over HTTPS and are stored in a database. They are <b>not</b> end-to-end encrypted.</p>
+  </div>
+</main>
+
+<!-- ===== APP ===== -->
+<div id="app" class="app hidden">
+  <aside class="sidebar">
+    <header class="bar">
+      <button id="me-btn" class="icon-btn me" type="button" aria-label="My profile"></button>
+      <span class="bar-title">ConnectChat</span>
+      <button id="btn-theme" class="icon-btn" type="button" aria-label="Toggle light/dark theme">🌓</button>
+      <button id="btn-new" class="icon-btn" type="button" aria-label="New chat">✚</button>
+      <button id="btn-logout" class="icon-btn" type="button" aria-label="Log out">⏻</button>
+    </header>
+    <div id="banner" class="banner hidden" role="status"></div>
+    <div class="filter"><input id="list-filter" type="search" placeholder="Search your chats" aria-label="Filter your chats"></div>
+    <ul id="conv-list" class="conv-list"></ul>
+  </aside>
+
+  <section class="chat">
+    <div id="chat-empty" class="chat-empty">
+      <div class="logo">💬</div>
+      <h2>ConnectChat</h2>
+      <p>Select a chat, or tap ✚ to find someone by username.<br>Sending and receiving messages needs an internet connection.</p>
+    </div>
+
+    <div id="chat-view" class="chat-view hidden">
+      <header class="bar chat-bar">
+        <button id="btn-back" class="icon-btn back" type="button" aria-label="Back to chats">←</button>
+        <div id="ch-avatar"></div>
+        <div class="ch-info"><div id="ch-name" class="ch-name"></div><div id="ch-status" class="ch-status"></div></div>
+        <button id="btn-delchat" class="icon-btn" type="button" aria-label="Delete chat">🗑</button>
+      </header>
+      <div id="messages" class="messages" role="log" aria-live="polite"></div>
+      <form id="msg-form" class="composer" autocomplete="off">
+        <textarea id="msg-input" rows="1" maxlength="4000" placeholder="Type a message" aria-label="Message"></textarea>
+        <button id="btn-send" class="send" type="submit" aria-label="Send">➤</button>
+      </form>
+    </div>
+  </section>
+</div>
+
+<!-- ===== DIALOGS ===== -->
+<dialog id="dlg-new">
+  <div class="dlg-head"><h2>New chat</h2><button class="icon-btn dlg-x" type="button" data-close aria-label="Close">✕</button></div>
+  <input id="user-search" type="search" placeholder="Search by username" autocapitalize="none" spellcheck="false" aria-label="Search users by username">
+  <ul id="search-results" class="results"></ul>
+</dialog>
+
+<dialog id="dlg-profile">
+  <div class="dlg-head"><h2>My profile</h2><button class="icon-btn dlg-x" type="button" data-close aria-label="Close">✕</button></div>
+  <form id="form-profile" novalidate>
+    <label>Email<input id="pf-email" type="text" disabled></label>
+    <label>Username<input id="pf-username" type="text" autocapitalize="none" spellcheck="false" maxlength="20"></label>
+    <label>Display name<input id="pf-name" type="text" maxlength="50"></label>
+    <label>About<input id="pf-about" type="text" maxlength="140"></label>
+    <p id="pf-error" class="form-error" role="alert"></p>
+    <button id="pf-save" class="primary" type="submit">Save</button>
+  </form>
+</dialog>
+
+<dialog id="dlg-confirm">
+  <form method="dialog">
+    <h2 id="cf-title"></h2>
+    <p id="cf-text"></p>
+    <div class="dlg-actions">
+      <button value="cancel" type="submit">Cancel</button>
+      <button id="cf-ok" value="ok" class="danger-btn" type="submit">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
