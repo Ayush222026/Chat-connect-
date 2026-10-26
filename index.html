@@ -30,7 +30,7 @@
     <div class="logo">💬</div>
     <h1>ConnectChat</h1>
     <p class="sub">Private one-to-one chat</p>
-    <div class="tabs" role="tablist">
+    <div id="auth-tabs" class="tabs" role="tablist">
       <button id="tab-login" class="tab active" role="tab" type="button">Log in</button>
       <button id="tab-signup" class="tab" role="tab" type="button">Sign up</button>
     </div>
@@ -51,6 +51,15 @@
       <p id="su-error" class="form-error" role="alert"></p>
       <p id="su-info" class="form-info" role="status"></p>
       <button id="su-btn" class="primary" type="submit">Create account</button>
+    </form>
+    <form id="form-otp" class="hidden" novalidate>
+      <p class="otp-lead">We sent a verification code to <b id="otp-email"></b>. Enter it below.</p>
+      <label>Verification code<input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required></label>
+      <p id="otp-error" class="form-error" role="alert"></p>
+      <p id="otp-msg" class="form-info" role="status"></p>
+      <button id="otp-btn" class="primary" type="submit">Verify and continue</button>
+      <button id="otp-resend" class="link-btn" type="button">Resend code</button>
+      <button id="otp-back" class="link-btn" type="button">← Back to log in</button>
     </form>
     <p class="fine">Messages travel over HTTPS and are stored in a database. They are <b>not</b> end-to-end encrypted.</p>
   </div>
@@ -86,7 +95,10 @@
         <button id="btn-delchat" class="icon-btn" type="button" aria-label="Delete chat">🗑</button>
       </header>
       <div id="messages" class="messages" role="log" aria-live="polite"></div>
+      <div id="attach-bar" class="attach-bar hidden"></div>
       <form id="msg-form" class="composer" autocomplete="off">
+        <button id="btn-attach" class="icon-btn attach" type="button" aria-label="Attach photo, video, audio or file">📎</button>
+        <input id="file-input" type="file" hidden accept="image/*,video/*,audio/*,application/pdf,text/plain,text/csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip">
         <textarea id="msg-input" rows="1" maxlength="4000" placeholder="Type a message" aria-label="Message"></textarea>
         <button id="btn-send" class="send" type="submit" aria-label="Send">➤</button>
       </form>
@@ -111,6 +123,15 @@
     <p id="pf-error" class="form-error" role="alert"></p>
     <button id="pf-save" class="primary" type="submit">Save</button>
   </form>
+</dialog>
+
+<dialog id="dlg-msg">
+  <div id="msg-menu"></div>
+</dialog>
+
+<dialog id="dlg-view">
+  <div class="dlg-head"><button id="view-dl" class="menu-item view-dl" type="button">⬇ Download</button><button class="icon-btn dlg-x" type="button" data-close aria-label="Close">✕</button></div>
+  <div id="view-body" class="view-body"></div>
 </dialog>
 
 <dialog id="dlg-confirm">

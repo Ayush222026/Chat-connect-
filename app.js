@@ -69,6 +69,18 @@ function errText(err) {
 }
 function setBusy(btn, on) { btn.disabled = on; btn.classList.toggle("loading", on); }
 const dn = (c) => c.name || c.username;
+const MAX_MEDIA = 10 * 1024 * 1024;
+const ALLOWED = new Set(["image/jpeg", "image/png", "image/gif", "image/webp",
+  "video/mp4", "video/webm", "video/quicktime",
+  "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/webm", "audio/wav", "audio/x-wav", "audio/x-m4a",
+  "application/pdf", "text/plain", "text/csv", "application/zip", "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation"]);
+const kindOf = (t) => t.startsWith("image/") ? "image" : t.startsWith("video/") ? "video" : t.startsWith("audio/") ? "audio" : "file";
+const KIND_LABEL = { image: "📷 Photo", video: "🎥 Video", audio: "🎵 Audio", file: "📎 File" };
+const fmtSize = (n) => n < 1024 ? n + " B" : n < 1048576 ? Math.round(n / 1024) + " KB" : (n / 1048576).toFixed(1) + " MB";
+const safeName = (n) => n.normalize("NFKD").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "").slice(-80) || "file";
 
 /* ====================== boot / config ====================== */
 const cfg = window.CONNECTCHAT_CONFIG || {};
@@ -94,7 +106,7 @@ const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY, {
 const S = {
   user: null, profile: null, booted: false,
   convs: [], pinned: null, filter: "", loadingConvs: true,
-  active: null, msgs: [], hasMore: false, loading: false, selected: null,
+  active: null, msgs: [], hasMore: false, loading: false, pending: null, pendingUrl: null,
   online: new Set(), typing: false, typingTimer: null, lastTypingSent: 0,
   tChan: null, tReady: false, dbChan: null, presChan: null, hb: null, rtDown: false,
 };
@@ -112,6 +124,7 @@ applyTheme(document.documentElement.dataset.theme || "light");
 
 /* ====================== auth ====================== */
 function selectTab(which) {
+  $("#form-otp").classList.add("hidden"); $("#auth-tabs").classList.remove("hidden");
   $("#tab-login").classList.toggle("active", which === "login");
   $("#tab-signup").classList.toggle("active", which === "signup");
   $("#form-login").classList.toggle("hidden", which !== "login");
@@ -129,7 +142,10 @@ $("#form-login").addEventListener("submit", async (e) => {
   const btn = $("#login-btn"); setBusy(btn, true);
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   setBusy(btn, false);
-  if (error) { err.textContent = errText(error); return; }
+  if (error) {
+    if (/Email not confirmed/i.test(error.message)) { showOtp(email, "This email isn't verified yet. Enter the code we sent, or tap Resend code."); return; }
+    err.textContent = errText(error); return;
+  }
   $("#login-password").value = "";
   await boot(data.session);
 });
@@ -152,14 +168,51 @@ $("#form-signup").addEventListener("submit", async (e) => {
     if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
       err.textContent = "That email is already registered. Try logging in."; return;
     }
-    if (!data.session) {
-      info.textContent = "Account created. Check your email to confirm it, then log in.";
-      selectTab("login"); $("#login-email").value = email; return;
-    }
+    if (!data.session) { showOtp(email, "Account created. Check your inbox (and spam folder) for the code."); return; }
     await boot(data.session);
   } catch (ex) { err.textContent = errText(ex); }
   finally { setBusy(btn, false); }
 });
+
+/* ---- email OTP verification ---- */
+let otpEmail = "", otpTimer = null;
+function showOtp(email, msg) {
+  otpEmail = email;
+  for (const f of ["#form-login", "#form-signup"]) $(f).classList.add("hidden");
+  $("#auth-tabs").classList.add("hidden"); $("#form-otp").classList.remove("hidden");
+  $("#otp-email").textContent = email; $("#otp-error").textContent = ""; $("#otp-msg").textContent = msg || "";
+  $("#otp-code").value = ""; $("#otp-code").focus();
+}
+$("#otp-back").onclick = () => selectTab("login");
+$("#form-otp").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const code = $("#otp-code").value.replace(/\s+/g, ""), err = $("#otp-error");
+  err.textContent = "";
+  if (!/^\d{6,10}$/.test(code)) { err.textContent = "Enter the numeric code from your email."; return; }
+  const btn = $("#otp-btn"); setBusy(btn, true);
+  const { data, error } = await sb.auth.verifyOtp({ email: otpEmail, token: code, type: "signup" });
+  setBusy(btn, false);
+  if (error) {
+    err.textContent = /expired|invalid/i.test(error.message) ? "That code is wrong or has expired. Tap Resend code to get a new one." : errText(error);
+    return;
+  }
+  if (!data.session) { selectTab("login"); toast("Email verified. Please log in."); return; }
+  selectTab("login"); await boot(data.session);
+});
+$("#otp-resend").onclick = async () => {
+  const b = $("#otp-resend"), err = $("#otp-error"), msg = $("#otp-msg");
+  err.textContent = ""; msg.textContent = ""; b.disabled = true;
+  const { error } = await sb.auth.resend({ type: "signup", email: otpEmail });
+  if (error) { err.textContent = errText(error); b.disabled = false; return; }
+  msg.textContent = "A new code has been sent.";
+  let n = 60; b.textContent = `Resend code (${n}s)`;
+  clearInterval(otpTimer);
+  otpTimer = setInterval(() => {
+    n--;
+    if (n <= 0) { clearInterval(otpTimer); b.disabled = false; b.textContent = "Resend code"; }
+    else b.textContent = `Resend code (${n}s)`;
+  }, 1000);
+};
 
 $("#btn-logout").onclick = logout;
 async function logout() {
@@ -173,8 +226,9 @@ function teardown() {
   for (const c of [S.dbChan, S.presChan, S.tChan]) if (c) sb.removeChannel(c);
   clearInterval(S.hb); clearTimeout(S.typingTimer);
   Object.assign(S, { user: null, profile: null, booted: false, convs: [], pinned: null, filter: "", loadingConvs: true,
-    active: null, msgs: [], hasMore: false, selected: null, online: new Set(), typing: false, tChan: null,
+    active: null, msgs: [], hasMore: false, pending: null, pendingUrl: null, online: new Set(), typing: false, tChan: null,
     tReady: false, dbChan: null, presChan: null, hb: null, rtDown: false });
+  mediaNodes.clear(); urlCache.clear(); renderAttach();
   $("#app").classList.remove("chat-open"); $("#chat-view").classList.add("hidden"); $("#chat-empty").classList.remove("hidden");
   $("#conv-list").replaceChildren(); $("#messages").replaceChildren(); $("#list-filter").value = "";
   document.title = "ConnectChat";
@@ -210,7 +264,7 @@ async function loadConvs() {
   S.convs = data.map((r) => ({
     id: r.conv_id, otherId: r.other_id, username: r.other_username, name: r.other_name,
     lastSeen: r.other_last_seen, lastBody: r.last_body, lastSender: r.last_sender,
-    lastAt: r.last_at, lastRead: r.last_read_at, unread: r.unread_count,
+    lastAt: r.last_at, lastRead: r.last_read_at, unread: r.unread_count, lastMedia: r.last_media_type,
   }));
   if (S.pinned) {
     if (S.convs.some((c) => c.id === S.pinned.id)) S.pinned = null;
@@ -251,7 +305,7 @@ function convItem(c) {
       h("div", { class: "conv-bot" },
         h("span", { class: "conv-prev" },
           mine && has ? h("span", { class: "tick" + (c.lastRead ? " read" : ""), text: c.lastRead ? "✓✓ " : "✓ " }) : null,
-          has ? c.lastBody : "Say hi 👋"),
+          !has ? "Say hi 👋" : c.lastMedia ? KIND_LABEL[c.lastMedia] + (c.lastBody ? " " + c.lastBody : "") : c.lastBody),
         c.unread ? h("span", { class: "badge", text: c.unread > 99 ? "99+" : String(c.unread) }) : null)));
 }
 
@@ -262,8 +316,8 @@ function renderMe() { $("#me-btn").replaceChildren(avatar(S.profile.display_name
 /* ====================== open / close chat ====================== */
 async function openConversation(id) {
   const c = S.convs.find((x) => x.id === id); if (!c) return;
-  closeTyping();
-  S.active = id; S.msgs = []; S.hasMore = false; S.selected = null; S.loading = true;
+  closeTyping(); clearPending(); mediaNodes.clear();
+  S.active = id; S.msgs = []; S.hasMore = false; S.loading = true;
   $("#app").classList.add("chat-open");
   $("#chat-empty").classList.add("hidden"); $("#chat-view").classList.remove("hidden");
   if (!(history.state && history.state.chat)) history.pushState({ chat: true }, "");
@@ -280,8 +334,8 @@ async function openConversation(id) {
 }
 
 function closeChat() {
-  S.active = null; S.msgs = []; S.selected = null; S.loading = false;
-  closeTyping();
+  S.active = null; S.msgs = []; S.loading = false;
+  closeTyping(); clearPending(); mediaNodes.clear();
   $("#app").classList.remove("chat-open");
   $("#chat-view").classList.add("hidden"); $("#chat-empty").classList.remove("hidden");
   renderList();
@@ -336,41 +390,125 @@ function renderMessages(mode) {
   else box.scrollTop = prevTop;
 }
 
+const mediaNodes = new Map();   // message id -> <img>/<video>/<audio>, reused so playback isn't interrupted by re-renders
+const urlCache = new Map();     // storage path -> signed URL (private bucket, links expire after 1 hour)
+async function signedUrl(path, download) {
+  const key = path + "|" + (download || "");
+  const hit = urlCache.get(key);
+  if (hit && hit.exp > Date.now() + 60000) return hit.url;
+  const { data, error } = await sb.storage.from("chat-media").createSignedUrl(path, 3600, download ? { download } : undefined);
+  if (error) throw error;
+  urlCache.set(key, { url: data.signedUrl, exp: Date.now() + 3600 * 1000 });
+  return data.signedUrl;
+}
+
+function mediaEl(m) {
+  const kind = m.media_type;
+  if (kind === "file") {
+    return h("button", { type: "button", class: "filecard", onclick: (e) => { e.stopPropagation(); openFile(m); } },
+      h("span", { class: "fi", text: "📎" }),
+      h("span", { class: "fmeta" }, h("span", { class: "fname", text: m.media_name || "File" }), h("span", { class: "fsize", text: fmtSize(m.media_size || 0) })));
+  }
+  if (mediaNodes.has(m.id)) return mediaNodes.get(m.id);
+  const props = { class: "media " + kind };
+  if (kind === "image") { props.alt = m.media_name || "photo"; props.loading = "lazy"; }
+  else { props.controls = true; props.preload = kind === "video" ? "metadata" : "none"; if (kind === "video") props.playsinline = true; }
+  const node = h(kind === "image" ? "img" : kind === "video" ? "video" : "audio", props);
+  node.addEventListener("click", (e) => { e.stopPropagation(); if (kind === "image") openViewer(m, node.src); });
+  if (m.localUrl) node.src = m.localUrl;
+  else if (m.media_path) {
+    signedUrl(m.media_path).then((u) => { node.src = u; })
+      .catch(() => { mediaNodes.delete(m.id); node.replaceWith(h("span", { class: "muted", text: "Media unavailable" })); });
+  }
+  mediaNodes.set(m.id, node);
+  return node;
+}
+
 function bubble(m) {
   const mine = m.sender_id === S.user.id;
   const tick = mine ? h("span", { class: "tick" + (m.read_at ? " read" : ""),
     title: m.failed ? "Not sent" : m.sending ? "Sending" : m.read_at ? "Read" : "Sent",
     text: m.failed ? "!" : m.sending ? "🕓" : m.read_at ? "✓✓" : "✓" }) : null;
-  const b = h("div", { class: "bubble" + (m.failed ? " failed" : "") },
-    h("span", { class: "txt", text: m.body }),
+  const b = h("div", { class: "bubble" + (m.failed ? " failed" : "") + (m.media_type ? " has-media" : "") },
+    h("button", { class: "mbtn", type: "button", "aria-label": "Message options", text: "⌄", onclick: (e) => { e.stopPropagation(); openMsgMenu(m); } }),
+    m.media_type ? mediaEl(m) : null,
+    m.body ? h("span", { class: "txt", text: m.body }) : null,
     h("span", { class: "meta" }, h("time", { text: fmtTime(m.created_at) }), tick));
-  b.addEventListener("click", () => { S.selected = S.selected === m.id ? null : m.id; renderMessages(); });
+  b.addEventListener("click", () => openMsgMenu(m));
   const row = h("div", { class: "row " + (mine ? "mine" : "theirs") }, b);
   if (m.failed) {
     row.append(h("div", { class: "actions" },
       h("button", { type: "button", onclick: () => transmit(m), text: "Not sent — retry" }),
-      h("button", { type: "button", class: "danger", onclick: () => { S.msgs = S.msgs.filter((x) => x.id !== m.id); renderMessages(); }, text: "Remove" })));
-  } else if (S.selected === m.id) {
-    const acts = h("div", { class: "actions" }, h("button", { type: "button", onclick: (e) => { e.stopPropagation(); copyMsg(m); }, text: "Copy" }));
-    if (mine) acts.append(h("button", { type: "button", class: "danger", onclick: (e) => { e.stopPropagation(); deleteMsg(m); }, text: "Delete for everyone" }));
-    row.append(acts);
+      h("button", { type: "button", class: "danger", onclick: () => discardLocal(m), text: "Remove" })));
   }
   return row;
+}
+
+function discardLocal(m) {
+  S.msgs = S.msgs.filter((x) => x.id !== m.id);
+  if (m.localUrl) URL.revokeObjectURL(m.localUrl);
+  if (m.media_path) sb.storage.from("chat-media").remove([m.media_path]).then(() => {}, () => {});
+  mediaNodes.delete(m.id); renderMessages();
+}
+
+/* ---- per-message menu: copy / open / delete for me / delete for everyone ---- */
+function menuBtn(label, fn, danger) {
+  return h("button", { type: "button", class: "menu-item" + (danger ? " danger" : ""), text: label,
+    onclick: () => { $("#dlg-msg").close(); fn(); } });
+}
+function openMsgMenu(m) {
+  if (m.sending || m.failed) return;
+  const mine = m.sender_id === S.user.id, items = [];
+  if (m.body) items.push(menuBtn("Copy text", () => copyMsg(m)));
+  if (m.media_type === "image") items.push(menuBtn("Open photo", () => openViewer(m)));
+  if (m.media_type) items.push(menuBtn("Download", () => openFile(m)));
+  items.push(menuBtn("Delete for me", () => deleteForMe(m), true));
+  if (mine) items.push(menuBtn("Delete for everyone", () => deleteMsg(m), true));
+  $("#msg-menu").replaceChildren(...items);
+  $("#dlg-msg").showModal();
 }
 
 async function copyMsg(m) {
   try { await navigator.clipboard.writeText(m.body); toast("Copied"); }
   catch (e) { toast("Could not copy on this browser.", "error"); }
-  S.selected = null; renderMessages();
+}
+
+async function deleteForMe(m) {
+  const ok = await confirmBox("Delete for you?", "This message will be removed from your chat only. The other person will still see it.", "Delete");
+  if (!ok) return;
+  const { error } = await sb.from("message_hides").insert({ message_id: m.id });
+  if (error && error.code !== "23505") { toast("Could not delete: " + errText(error), "error"); return; }
+  S.msgs = S.msgs.filter((x) => x.id !== m.id); mediaNodes.delete(m.id); renderMessages(); refreshConvs();
+  toast("Deleted for you");
 }
 
 async function deleteMsg(m) {
-  const ok = await confirmBox("Delete message?", "This removes the message for everyone in this chat. It cannot be undone.", "Delete");
+  const ok = await confirmBox("Delete for everyone?", "This removes the message (and any attached file) for everyone in this chat. It cannot be undone.", "Delete");
   if (!ok) return;
   const { data, error } = await sb.from("messages").delete().eq("id", m.id).select("id");
   if (error) { toast("Could not delete: " + errText(error), "error"); return; }
-  if (!data || !data.length) { toast("You can only delete your own messages.", "error"); return; }
-  S.msgs = S.msgs.filter((x) => x.id !== m.id); S.selected = null; renderMessages(); refreshConvs();
+  if (!data || !data.length) { toast("You can only delete your own messages for everyone.", "error"); return; }
+  if (m.media_path) sb.storage.from("chat-media").remove([m.media_path]).then(() => {}, () => {});
+  S.msgs = S.msgs.filter((x) => x.id !== m.id); mediaNodes.delete(m.id); renderMessages(); refreshConvs();
+}
+
+async function openViewer(m, src) {
+  const body = $("#view-body");
+  body.replaceChildren(h("div", { class: "spinner" }));
+  $("#view-dl").onclick = () => openFile(m);
+  $("#dlg-view").showModal();
+  try {
+    const url = src || m.localUrl || await signedUrl(m.media_path);
+    body.replaceChildren(h("img", { src: url, alt: m.media_name || "photo" }));
+  } catch (e) { body.replaceChildren(h("p", { class: "muted", text: "Could not load the image." })); }
+}
+async function openFile(m) {
+  if (!m.media_path) return;
+  try {
+    const url = await signedUrl(m.media_path, m.media_name || true);
+    const a = h("a", { href: url, target: "_blank", rel: "noopener" });
+    document.body.append(a); a.click(); a.remove();
+  } catch (e) { toast("Could not open the file: " + errText(e), "error"); }
 }
 
 /* ---- sending ---- */
@@ -378,8 +516,9 @@ const input = $("#msg-input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; }
 function updateComposer() {
   const off = !navigator.onLine;
-  input.disabled = off; $("#btn-send").disabled = off;
-  input.placeholder = off ? "Offline — connect to the internet to send" : "Type a message";
+  input.disabled = off; $("#btn-send").disabled = off; $("#btn-attach").disabled = off;
+  input.placeholder = off ? "Offline — connect to the internet to send"
+    : S.pending ? "Add a caption (optional)" : "Type a message";
 }
 $("#msg-form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
 $("#btn-send").addEventListener("mousedown", (e) => e.preventDefault()); // keep keyboard open
@@ -394,24 +533,85 @@ input.addEventListener("input", () => {
   }
 });
 
+/* ---- attachments ---- */
+$("#btn-attach").onclick = () => $("#file-input").click();
+$("#file-input").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (f) await attachFile(f);
+});
+
+async function shrinkImage(file) {     // phone photos are huge; resize to max 1600px JPEG before upload
+  try {
+    if (file.size < 600 * 1024) return file;
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const w = Math.round(bmp.width * scale), hh = Math.round(bmp.height * scale);
+    const cv = document.createElement("canvas"); cv.width = w; cv.height = hh;
+    const ctx = cv.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, hh); ctx.drawImage(bmp, 0, 0, w, hh);
+    const blob = await new Promise((r) => cv.toBlob(r, "image/jpeg", 0.82));
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+  } catch (e) { return file; }
+}
+
+async function attachFile(file) {
+  if (!S.active) return;
+  if (!navigator.onLine) { toast("You're offline. Attachments can only be sent while connected.", "error"); return; }
+  if (!ALLOWED.has(file.type)) { toast("This file type isn't supported. Allowed: photos, videos, audio, PDF, Office files, text, zip.", "error"); return; }
+  let f = file;
+  if (f.type.startsWith("image/") && f.type !== "image/gif") f = await shrinkImage(f);
+  if (f.size > MAX_MEDIA) { toast(`File is too large (${fmtSize(f.size)}). The limit is 10 MB.`, "error"); return; }
+  clearPending(); S.pending = f; S.pendingUrl = URL.createObjectURL(f); renderAttach();
+}
+function clearPending() {
+  if (S.pendingUrl) URL.revokeObjectURL(S.pendingUrl);
+  S.pending = null; S.pendingUrl = null; renderAttach();
+}
+function renderAttach() {
+  const bar = $("#attach-bar"), f = S.pending;
+  bar.classList.toggle("hidden", !f); bar.replaceChildren();
+  if (f) {
+    const k = kindOf(f.type);
+    bar.append(
+      k === "image" ? h("img", { src: S.pendingUrl, alt: "" }) : h("span", { class: "fi", text: k === "video" ? "🎥" : k === "audio" ? "🎵" : "📎" }),
+      h("span", { class: "fmeta" }, h("span", { class: "fname", text: f.name }), h("span", { class: "fsize", text: fmtSize(f.size) })),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Remove attachment", text: "✕", onclick: clearPending }));
+  }
+  updateComposer();
+}
+
 async function send() {
-  const body = input.value.trim();
-  if (!body || !S.active) return;
+  const body = input.value.trim(), file = S.pending;
+  if ((!body && !file) || !S.active) return;
   if (!navigator.onLine) { toast("You're offline. Messages can only be sent while connected.", "error"); return; }
   input.value = ""; autosize();
   const m = { id: uuid(), conversation_id: S.active, sender_id: S.user.id, body,
     created_at: new Date().toISOString(), read_at: null, sending: true };
-  S.msgs.push(m); S.selected = null; renderMessages("bottom");
+  if (file) {
+    Object.assign(m, { media_type: kindOf(file.type), media_name: file.name, media_size: file.size, file, localUrl: S.pendingUrl });
+    S.pending = null; S.pendingUrl = null; renderAttach();   // ownership of the preview URL moves to the message
+  }
+  S.msgs.push(m); renderMessages("bottom");
   await transmit(m);
 }
 
 async function transmit(m) {
   m.sending = true; m.failed = false;
   if (S.active === m.conversation_id) renderMessages();
-  const { data, error } = await sb.from("messages")
-    .insert({ id: m.id, conversation_id: m.conversation_id, body: m.body }).select().single();
-  if (error && error.code !== "23505") { m.sending = false; m.failed = true; toast("Message not sent: " + errText(error), "error"); }
-  else { if (data) Object.assign(m, data); m.sending = false; m.failed = false; }
+  let err = null;
+  if (m.file && !m.media_path) {          // 1) upload the file to private storage
+    const path = `${m.conversation_id}/${S.user.id}/${uuid()}-${safeName(m.media_name)}`;
+    const up = await sb.storage.from("chat-media").upload(path, m.file, { contentType: m.file.type, upsert: false });
+    if (up.error) err = up.error; else m.media_path = path;
+  }
+  if (!err) {                             // 2) insert the message row
+    const row = { id: m.id, conversation_id: m.conversation_id, body: m.body };
+    if (m.media_path) Object.assign(row, { media_path: m.media_path, media_type: m.media_type, media_name: m.media_name, media_size: m.media_size });
+    const r = await sb.from("messages").insert(row).select().single();
+    if (r.error && r.error.code !== "23505") err = r.error; else if (r.data) Object.assign(m, r.data);
+  }
+  if (err) { m.sending = false; m.failed = true; toast("Message not sent: " + errText(err), "error"); }
+  else { m.sending = false; m.failed = false; delete m.file; }
   if (S.active === m.conversation_id) { sortMsgs(); renderMessages(); }
   refreshConvs();
 }
@@ -480,7 +680,7 @@ function onUpdate(m) {
 }
 function onDelete(old) {
   if (!S.user || !old || !old.id) return;
-  const n = S.msgs.length; S.msgs = S.msgs.filter((x) => x.id !== old.id);
+  mediaNodes.delete(old.id); const n = S.msgs.length; S.msgs = S.msgs.filter((x) => x.id !== old.id);
   if (S.msgs.length !== n) renderMessages();
   refreshConvs();
 }
