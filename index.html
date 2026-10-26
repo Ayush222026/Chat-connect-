@@ -96,12 +96,19 @@
       </header>
       <div id="messages" class="messages" role="log" aria-live="polite"></div>
       <div id="attach-bar" class="attach-bar hidden"></div>
+      <div id="emoji-panel" class="emoji-panel hidden"></div>
       <form id="msg-form" class="composer" autocomplete="off">
-        <button id="btn-attach" class="icon-btn attach" type="button" aria-label="Attach photo, video, audio or file">📎</button>
-        <input id="file-input" type="file" hidden accept="image/*,video/*,audio/*,application/pdf,text/plain,text/csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip">
-        <textarea id="msg-input" rows="1" maxlength="4000" placeholder="Type a message" aria-label="Message"></textarea>
-        <button id="btn-send" class="send" type="submit" aria-label="Send">➤</button>
+        <div class="pill">
+          <button id="btn-emoji" class="pill-btn" type="button" aria-label="Emoji">😊</button>
+          <textarea id="msg-input" rows="1" maxlength="4000" placeholder="Message" aria-label="Message"></textarea>
+          <div id="rec-ui" class="rec-ui hidden"><span class="rec-dot"></span><span id="rec-time">0:00</span><span class="rec-hint">Recording… tap green button to send</span><button id="rec-cancel" class="pill-btn" type="button" aria-label="Cancel recording">🗑</button></div>
+          <button id="btn-attach" class="pill-btn" type="button" aria-label="Attach file">📎</button>
+          <button id="btn-camera" class="pill-btn" type="button" aria-label="Take a photo">📷</button>
+        </div>
+        <button id="btn-send" class="send" type="submit" aria-label="Send or record voice note"></button>
       </form>
+      <input id="file-input" type="file" hidden accept="image/*,video/*,audio/*,application/pdf,text/plain,text/csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip">
+      <input id="camera-input" type="file" hidden accept="image/*" capture="environment">
     </div>
   </section>
 </div>

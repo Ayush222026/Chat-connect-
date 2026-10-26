@@ -178,3 +178,20 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 .view-dl { width: auto; border: 0; color: var(--accent); font-weight: 600; padding: 8px; }
 .view-body { text-align: center; }
 .view-body img { max-width: 100%; max-height: 78dvh; display: block; margin: 0 auto; border-radius: 6px; }
+
+/* ---- v3: WhatsApp-style composer ---- */
+.composer { align-items: flex-end; gap: 6px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); background: transparent; }
+:root[data-theme="dark"] .composer { background: transparent; }
+.pill { flex: 1; min-width: 0; display: flex; align-items: flex-end; background: var(--input); border-radius: 26px; padding: 2px 4px; min-height: 48px; box-shadow: var(--shadow); }
+.pill textarea { flex: 1; min-width: 0; border: 0; border-radius: 0; background: none; padding: 13px 4px; max-height: 120px; }
+.pill textarea:focus { outline: none; }
+.pill-btn { flex: none; width: 40px; height: 44px; border: 0; background: none; font-size: 21px; filter: grayscale(1); opacity: .7; }
+.pill-btn:disabled { opacity: .3; }
+.send { width: 48px; height: 48px; display: grid; place-items: center; box-shadow: var(--shadow); }
+.send svg { width: 24px; height: 24px; }
+.rec-ui { flex: 1; display: flex; align-items: center; gap: 10px; padding: 0 8px; min-height: 44px; }
+.rec-dot { width: 11px; height: 11px; border-radius: 50%; background: #e53935; animation: blink 1s infinite; }
+.rec-hint { flex: 1; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.emoji-panel { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 8px; background: var(--panel); border-top: 1px solid var(--line); max-height: 190px; overflow-y: auto; }
+.emoji-panel button { border: 0; background: none; font-size: 25px; padding: 5px 0; border-radius: 8px; }
+.emoji-panel button:hover { background: var(--hover); }

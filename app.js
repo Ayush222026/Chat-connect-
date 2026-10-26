@@ -60,6 +60,10 @@ function toast(msg, kind = "info") {
 }
 function errText(err) {
   const m = (err && (err.message || err.error_description)) || "Something went wrong.";
+  if (/media_(path|type|name|size)/i.test(m)) return "Database is not updated for media yet. Re-run the latest schema.sql in the Supabase SQL Editor.";
+  if (/Bucket not found/i.test(m)) return "Storage bucket 'chat-media' is missing. Re-run the latest schema.sql in the Supabase SQL Editor.";
+  if (/row-level security|violates row/i.test(m)) return "Blocked by database rules. Re-run the latest schema.sql in the Supabase SQL Editor, then try again.";
+  if (/exceeded the maximum|too large|payload/i.test(m)) return "That file is too large (limit 10 MB).";
   if (/Invalid login credentials/i.test(m)) return "Wrong email or password.";
   if (/Email not confirmed/i.test(m)) return "Please confirm your email first (check your inbox), then log in.";
   if (/already registered|already been registered/i.test(m)) return "That email is already registered. Try logging in.";
@@ -70,6 +74,9 @@ function errText(err) {
 function setBusy(btn, on) { btn.disabled = on; btn.classList.toggle("loading", on); }
 const dn = (c) => c.name || c.username;
 const MAX_MEDIA = 10 * 1024 * 1024;
+const MIC_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>';
+const SEND_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
+const EMOJIS = "😀 😂 🤣 😊 😍 😘 😉 😎 🤔 😅 😢 😭 😡 🥳 😴 🤗 👍 👎 👏 🙏 💪 🙌 👋 🤝 ❤️ 💔 🔥 ✨ 🎉 💯 ✅ ❌ 😇 🤩 😜 🤪 😏 🙄 😬 🤯 😱 🥺 😋 🤤 👀 💬 🎂 🎁 🌹 ☀️ 🌙 ⭐ 🍕 ☕ 🚀 📚 💻 📱 🎵 ⚽ 🏏 🇮🇳 ✌️".split(" ");
 const ALLOWED = new Set(["image/jpeg", "image/png", "image/gif", "image/webp",
   "video/mp4", "video/webm", "video/quicktime",
   "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/webm", "audio/wav", "audio/x-wav", "audio/x-m4a",
@@ -228,7 +235,7 @@ function teardown() {
   Object.assign(S, { user: null, profile: null, booted: false, convs: [], pinned: null, filter: "", loadingConvs: true,
     active: null, msgs: [], hasMore: false, pending: null, pendingUrl: null, online: new Set(), typing: false, tChan: null,
     tReady: false, dbChan: null, presChan: null, hb: null, rtDown: false });
-  mediaNodes.clear(); urlCache.clear(); renderAttach();
+  mediaNodes.clear(); urlCache.clear(); cancelRecording(); renderAttach();
   $("#app").classList.remove("chat-open"); $("#chat-view").classList.add("hidden"); $("#chat-empty").classList.remove("hidden");
   $("#conv-list").replaceChildren(); $("#messages").replaceChildren(); $("#list-filter").value = "";
   document.title = "ConnectChat";
@@ -316,7 +323,7 @@ function renderMe() { $("#me-btn").replaceChildren(avatar(S.profile.display_name
 /* ====================== open / close chat ====================== */
 async function openConversation(id) {
   const c = S.convs.find((x) => x.id === id); if (!c) return;
-  closeTyping(); clearPending(); mediaNodes.clear();
+  closeTyping(); clearPending(); cancelRecording(); $("#emoji-panel").classList.add("hidden"); mediaNodes.clear();
   S.active = id; S.msgs = []; S.hasMore = false; S.loading = true;
   $("#app").classList.add("chat-open");
   $("#chat-empty").classList.add("hidden"); $("#chat-view").classList.remove("hidden");
@@ -335,7 +342,7 @@ async function openConversation(id) {
 
 function closeChat() {
   S.active = null; S.msgs = []; S.loading = false;
-  closeTyping(); clearPending(); mediaNodes.clear();
+  closeTyping(); clearPending(); cancelRecording(); mediaNodes.clear();
   $("#app").classList.remove("chat-open");
   $("#chat-view").classList.add("hidden"); $("#chat-empty").classList.remove("hidden");
   renderList();
@@ -514,19 +521,89 @@ async function openFile(m) {
 /* ---- sending ---- */
 const input = $("#msg-input");
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; }
+const rec = { mr: null, chunks: [], stream: null, t0: 0, timer: null, active: false };
 function updateComposer() {
-  const off = !navigator.onLine;
-  input.disabled = off; $("#btn-send").disabled = off; $("#btn-attach").disabled = off;
-  input.placeholder = off ? "Offline — connect to the internet to send"
-    : S.pending ? "Add a caption (optional)" : "Type a message";
+  const off = !navigator.onLine, has = input.value.trim() || S.pending;
+  for (const id of ["#btn-attach", "#btn-camera", "#btn-emoji"]) $(id).disabled = off || rec.active;
+  input.disabled = off; $("#btn-send").disabled = off;
+  input.classList.toggle("hidden", rec.active); $("#rec-ui").classList.toggle("hidden", !rec.active);
+  const mode = rec.active || has ? "send" : "mic";
+  const btn = $("#btn-send");
+  if (btn.dataset.mode !== mode) { btn.dataset.mode = mode; btn.innerHTML = mode === "send" ? SEND_SVG : MIC_SVG; } // static icon markup, no user data
+  input.placeholder = off ? "Offline — connect to the internet to send" : S.pending ? "Add a caption" : "Message";
 }
-$("#msg-form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+$("#msg-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (rec.active) sendVoice();
+  else if ($("#btn-send").dataset.mode === "mic") startRecording();
+  else send();
+});
 $("#btn-send").addEventListener("mousedown", (e) => e.preventDefault()); // keep keyboard open
+
+/* ---- emoji picker ---- */
+const emojiPanel = $("#emoji-panel");
+emojiPanel.replaceChildren(...EMOJIS.map((em) => h("button", { type: "button", text: em, onclick: () => insertEmoji(em) })));
+$("#btn-emoji").onclick = () => emojiPanel.classList.toggle("hidden");
+function insertEmoji(em) {
+  const a = input.selectionStart == null ? input.value.length : input.selectionStart;
+  const b = input.selectionEnd == null ? a : input.selectionEnd;
+  input.value = input.value.slice(0, a) + em + input.value.slice(b);
+  input.setSelectionRange(a + em.length, a + em.length);
+  autosize(); updateComposer();
+}
+
+/* ---- voice notes (tap mic to record, tap green button to send) ---- */
+function tickRec() {
+  const sec = Math.floor((Date.now() - rec.t0) / 1000);
+  $("#rec-time").textContent = Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+}
+async function startRecording() {
+  if (!S.active) return;
+  if (!navigator.onLine) { toast("You're offline. Voice notes can only be sent while connected.", "error"); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { toast("Voice notes aren't supported on this browser.", "error"); return; }
+  try { rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { toast("Microphone permission is needed to record a voice note.", "error"); return; }
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t));
+  rec.mr = new MediaRecorder(rec.stream, mime ? { mimeType: mime } : undefined);
+  rec.chunks = []; rec.mr.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+  rec.mr.start(); rec.active = true; rec.t0 = Date.now();
+  clearInterval(rec.timer); rec.timer = setInterval(tickRec, 500); tickRec(); updateComposer();
+}
+function stopRec() {
+  clearInterval(rec.timer);
+  if (rec.stream) rec.stream.getTracks().forEach((t) => t.stop());
+  rec.stream = null; rec.active = false;
+}
+function cancelRecording() {
+  if (!rec.active) return;
+  if (rec.mr) { rec.mr.onstop = null; try { rec.mr.stop(); } catch (e) { /* already stopped */ } }
+  stopRec(); updateComposer();
+}
+$("#rec-cancel").onclick = cancelRecording;
+function finishRecording() {
+  return new Promise((resolve) => {
+    rec.mr.onstop = () => {
+      const type = (rec.mr.mimeType || "audio/webm").split(";")[0];
+      const blob = new Blob(rec.chunks, { type });
+      stopRec(); updateComposer();
+      resolve(new File([blob], "voice-note-" + Date.now() + (type === "audio/mp4" ? ".m4a" : ".webm"), { type }));
+    };
+    rec.mr.stop();
+  });
+}
+async function sendVoice() {
+  const f = await finishRecording();
+  if (f.size < 1500) { toast("Recording was too short."); return; }
+  if (f.size > MAX_MEDIA) { toast("Voice note is too long (limit 10 MB).", "error"); return; }
+  clearPending(); S.pending = f; S.pendingUrl = URL.createObjectURL(f);
+  await send();
+}
+
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && matchMedia("(pointer:fine)").matches) { e.preventDefault(); send(); }
 });
 input.addEventListener("input", () => {
-  autosize();
+  autosize(); updateComposer();
   if (input.value && S.tReady && Date.now() - S.lastTypingSent > 2000) {
     S.lastTypingSent = Date.now();
     S.tChan.send({ type: "broadcast", event: "typing", payload: { from: S.user.id } });
@@ -535,10 +612,13 @@ input.addEventListener("input", () => {
 
 /* ---- attachments ---- */
 $("#btn-attach").onclick = () => $("#file-input").click();
-$("#file-input").addEventListener("change", async (e) => {
-  const f = e.target.files[0]; e.target.value = "";
-  if (f) await attachFile(f);
-});
+$("#btn-camera").onclick = () => $("#camera-input").click();
+for (const id of ["#file-input", "#camera-input"]) {
+  $(id).addEventListener("change", async (e) => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (f) await attachFile(f);
+  });
+}
 
 async function shrinkImage(file) {     // phone photos are huge; resize to max 1600px JPEG before upload
   try {
@@ -557,7 +637,7 @@ async function shrinkImage(file) {     // phone photos are huge; resize to max 1
 async function attachFile(file) {
   if (!S.active) return;
   if (!navigator.onLine) { toast("You're offline. Attachments can only be sent while connected.", "error"); return; }
-  if (!ALLOWED.has(file.type)) { toast("This file type isn't supported. Allowed: photos, videos, audio, PDF, Office files, text, zip.", "error"); return; }
+  if (!ALLOWED.has((file.type || "").split(";")[0])) { toast("This file type isn't supported. Allowed: photos, videos, audio, PDF, Office files, text, zip.", "error"); return; }
   let f = file;
   if (f.type.startsWith("image/") && f.type !== "image/gif") f = await shrinkImage(f);
   if (f.size > MAX_MEDIA) { toast(`File is too large (${fmtSize(f.size)}). The limit is 10 MB.`, "error"); return; }
@@ -574,7 +654,7 @@ function renderAttach() {
     const k = kindOf(f.type);
     bar.append(
       k === "image" ? h("img", { src: S.pendingUrl, alt: "" }) : h("span", { class: "fi", text: k === "video" ? "🎥" : k === "audio" ? "🎵" : "📎" }),
-      h("span", { class: "fmeta" }, h("span", { class: "fname", text: f.name }), h("span", { class: "fsize", text: fmtSize(f.size) })),
+      h("span", { class: "fmeta" }, h("span", { class: "fname", text: f.name }), h("span", { class: "fsize", text: fmtSize(f.size) + " · tap the green button to send" })),
       h("button", { type: "button", class: "icon-btn", "aria-label": "Remove attachment", text: "✕", onclick: clearPending }));
   }
   updateComposer();
@@ -584,14 +664,14 @@ async function send() {
   const body = input.value.trim(), file = S.pending;
   if ((!body && !file) || !S.active) return;
   if (!navigator.onLine) { toast("You're offline. Messages can only be sent while connected.", "error"); return; }
-  input.value = ""; autosize();
+  input.value = ""; autosize(); emojiPanel.classList.add("hidden");
   const m = { id: uuid(), conversation_id: S.active, sender_id: S.user.id, body,
     created_at: new Date().toISOString(), read_at: null, sending: true };
   if (file) {
     Object.assign(m, { media_type: kindOf(file.type), media_name: file.name, media_size: file.size, file, localUrl: S.pendingUrl });
     S.pending = null; S.pendingUrl = null; renderAttach();   // ownership of the preview URL moves to the message
   }
-  S.msgs.push(m); renderMessages("bottom");
+  S.msgs.push(m); renderMessages("bottom"); updateComposer();
   await transmit(m);
 }
 
@@ -601,7 +681,7 @@ async function transmit(m) {
   let err = null;
   if (m.file && !m.media_path) {          // 1) upload the file to private storage
     const path = `${m.conversation_id}/${S.user.id}/${uuid()}-${safeName(m.media_name)}`;
-    const up = await sb.storage.from("chat-media").upload(path, m.file, { contentType: m.file.type, upsert: false });
+    const up = await sb.storage.from("chat-media").upload(path, m.file, { contentType: m.file.type.split(";")[0], upsert: false });
     if (up.error) err = up.error; else m.media_path = path;
   }
   if (!err) {                             // 2) insert the message row
